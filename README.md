@@ -1,4 +1,4 @@
-Per utilizzare il file clickare sul tasto verde in alto a destra "Code" quindi scegliere l'opzione "download zip". Una volta scaricato estrarre il file "RendicontoDiCassa.xlsm" in una cartella del computer. Aprendo il file excel vi verrà chiesto di abilitare il funzionamento delle macro.<br/>
+Per utilizzare il file clickare sul tasto verde in alto a destra "Code" quindi scegliere l'opzione "download zip". Una volta scaricato estrarre il file "RendicontoDiCassa.xlsm" in una cartella del computer. Aprendo il file excel in alto a sinistra apparirà una striscia "VISUALIZZAZIONE PROTETTA", clickate sul tasto "Abilita modifica".<br/>
 # RendicontoCassaETS
 Il foglio di excel permette di compilare un rendiconto delle spese di un ETS classificandole con le voci definite dall'agenzia delle entrate.
 Nel definire i movimenti nel foglio di cassa è possibile specificare se è relativo ad un movimento di cassa od di conto corrente. I tipi di questa classificazione è definita nel foglio "Rapporti" permettendo, ad esempio, di avere più conti correnti.
