@@ -1,3 +1,4 @@
+Tool Excel per la redazione del bilancio di esercizio di associazioni ETS (Enti del Terzo Settore) come APS, ODV e simili – Conforme al RUNTS e normativa italiana. 
 Per utilizzare il file clickare sul tasto verde in alto a destra "Code" quindi scegliere l'opzione "download zip". Una volta scaricato estrarre il file "RendicontoDiCassa.xlsm" in una cartella del computer. Aprendo il file excel in alto a sinistra apparirà una striscia "VISUALIZZAZIONE PROTETTA", clickate sul tasto "Abilita modifica".<br/>
 # RendicontoCassaETS
 Questo file di excel permette di compilare un rendiconto delle spese di un ETS classificandole con le voci definite dall'agenzia delle entrate.<br/>
