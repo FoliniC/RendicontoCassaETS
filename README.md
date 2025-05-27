@@ -17,4 +17,13 @@ E' altresì sconsigliato cancellare una voce precedentemente usata.<br/>
 Nel caso che ad una voce venga cambiato il significato il procedimento corretto è quello di impostare la colonna "DataFine" nel giorno di tale cambiamento, mentre sulla voce modificata impostando come "DataInizio" il giorno seguente.
 Ovviamente tale procedura può essere evitata nel caso che la voce modificata non sia mai stata usata.
 
+Changelog
+
+2025/05
+1. Rimozione delle verifiche sui testi delle diciture in favore dei codici
+2. Aggiunta gestione di cassa e conto corrente
+3. Totalizzazione dei valori di bilancio annuali
+4. Recupero valore saldi cassa e CC nel bilancio
+5. Fix posizionamento alcune voci 
+6. Rinominate colonne t e t-1 negli anni effettivi, come da indicazioni RUNTS
 
