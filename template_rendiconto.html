@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page {
+    size: A4 landscape;
+    margin: 12mm 10mm 14mm 10mm;
+    @bottom-center {
+      content: "Pagina " counter(page) " di " counter(pages);
+      font-size: 8pt;
+      color: #555;
+    }
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 8.5pt;
+    color: #111;
+    background: white;
+  }
+
+  /* ── INTESTAZIONE ── */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 2px solid #1a3a5c;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+  }
+  .header-left h1 {
+    font-size: 12pt;
+    font-weight: 700;
+    color: #1a3a5c;
+    letter-spacing: 0.02em;
+  }
+  .header-left h2 {
+    font-size: 9pt;
+    font-weight: 400;
+    color: #444;
+    margin-top: 2px;
+  }
+  .header-right {
+    text-align: right;
+    font-size: 7.5pt;
+    color: #555;
+    line-height: 1.5;
+  }
+  .header-right .anno {
+    font-size: 18pt;
+    font-weight: 700;
+    color: #1a3a5c;
+    display: block;
+  }
+
+  /* ── TABELLA PRINCIPALE ── */
+  .rendiconto {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  /* Colonne: etichetta_u | val_u | val_u_prec || etichetta_e | val_e | val_e_prec */
+  .rendiconto col.lbl  { width: 32%; }
+  .rendiconto col.val  { width: 9%; }
+  .rendiconto col.sep  { width: 1%; }
+  .rendiconto col.lbl2 { width: 32%; }
+  .rendiconto col.val2 { width: 9%; }
+
+  .rendiconto thead tr th {
+    background: #1a3a5c;
+    color: white;
+    padding: 4px 6px;
+    font-size: 7.5pt;
+    font-weight: 600;
+    text-align: center;
+    border: 1px solid #0f2540;
+  }
+  .rendiconto thead tr th.lbl-head { text-align: left; }
+
+  /* Corpo */
+  .rendiconto tbody tr td {
+    padding: 2px 5px;
+    border-bottom: 1px solid #e8e8e8;
+    vertical-align: middle;
+    line-height: 1.35;
+  }
+
+  /* Alternanza righe */
+  .rendiconto tbody tr:nth-child(even) td {
+    background: #f5f7fa;
+  }
+  .rendiconto tbody tr:nth-child(odd) td {
+    background: #ffffff;
+  }
+
+  /* Celle numeriche */
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .num-prec { text-align: right; color: #666; font-size: 7.5pt; font-variant-numeric: tabular-nums; }
+
+  /* Separatore verticale */
+  .sep-col { background: #1a3a5c !important; width: 3px; padding: 0 !important; }
+
+  /* Intestazioni sezione (A, B, C, D, E) */
+  .row-intestazione td { font-weight: 700; color: #1a3a5c; font-size: 8.5pt; background: #e8eef5 !important; }
+
+  /* Totale sezione */
+  .row-totale-sezione td { font-weight: 600; background: #dce4ef !important; border-top: 1.5px solid #1a3a5c; }
+  .row-totale-sezione .lbl-cell { padding-left: 20px; font-style: italic; }
+
+  /* Avanzo/disavanzo */
+  .row-avanzo td { font-weight: 600; background: #e6f0e6 !important; color: #1a5c2a; border-top: 1px solid #4a8c5c; }
+  .row-avanzo-neg td { background: #f5e6e6 !important; color: #7a1a1a; }
+
+  /* Totale gestione */
+  .row-totale-gestione td { font-weight: 700; background: #c8d8f0 !important; border-top: 2px solid #1a3a5c; font-size: 8.5pt; }
+
+  /* Righe finali: imposte, saldi */
+  .row-finale td { background: #f0f0f0 !important; font-weight: 500; }
+  .row-saldo td  { background: #e8eef5 !important; font-weight: 600; }
+  .row-totale-generale td { background: #1a3a5c !important; color: white !important; font-weight: 700; font-size: 9pt; }
+
+  /* Voce normale */
+  .lbl-cell { padding-left: 12px; }
+  .lbl-cell-noindent { padding-left: 5px; }
+
+  /* Valore negativo */
+  .neg { color: #8b1a1a; }
+
+  /* ── FIRMA ── */
+  .firma {
+    margin-top: 18px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 8pt;
+    color: #333;
+  }
+  .firma-box {
+    width: 30%;
+    border-top: 1px solid #888;
+    padding-top: 4px;
+    text-align: center;
+  }
+
+  /* ── NOTA LEGALE ── */
+  .nota {
+    margin-top: 8px;
+    font-size: 6.5pt;
+    color: #888;
+    border-top: 1px solid #ddd;
+    padding-top: 4px;
+  }
+</style>
+</head>
+<body>
+
+<!-- INTESTAZIONE -->
+<div class="header">
+  <div class="header-left">
+    <h1>{{ ente }}</h1>
+    <h2>Rendiconto per Cassa — Modello D (D.M. 39/2020 art. 13)</h2>
+  </div>
+  <div class="header-right">
+    <span class="anno">{{ anno }}</span>
+    Stampato il: {{ data_stampa }}<br>
+    Codice Fiscale: {{ cf }}<br>
+    {% if iscrizione_runts %}RUNTS: {{ iscrizione_runts }}{% endif %}
+  </div>
+</div>
+
+<!-- TABELLA RENDICONTO -->
+<table class="rendiconto">
+  <colgroup>
+    <col class="lbl">
+    <col class="val">
+    <col class="val">
+    <col class="sep">
+    <col class="lbl2">
+    <col class="val2">
+    <col class="val2">
+  </colgroup>
+  <thead>
+    <tr>
+      <th class="lbl-head">Uscite</th>
+      <th>{{ anno }}</th>
+      <th>{{ anno - 1 }}</th>
+      <th class="sep-col"></th>
+      <th class="lbl-head">Entrate</th>
+      <th>{{ anno }}</th>
+      <th>{{ anno - 1 }}</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for riga in righe %}
+    <tr class="{{ riga.row_class }}">
+      <!-- COLONNA USCITE -->
+      <td class="{{ riga.lbl_class_u }}">{{ riga.label_u }}</td>
+      <td class="num {% if riga.val_u is not none and riga.val_u < 0 %}neg{% endif %}">
+        {% if riga.val_u is not none %}{{ "%.2f"|format(riga.val_u) }}{% endif %}
+      </td>
+      <td class="num-prec {% if riga.val_u_prec is not none and riga.val_u_prec < 0 %}neg{% endif %}">
+        {% if riga.val_u_prec is not none %}{{ "%.2f"|format(riga.val_u_prec) }}{% endif %}
+      </td>
+      <!-- SEPARATORE -->
+      <td class="sep-col"></td>
+      <!-- COLONNA ENTRATE -->
+      <td class="{{ riga.lbl_class_e }}">{{ riga.label_e }}</td>
+      <td class="num {% if riga.val_e is not none and riga.val_e < 0 %}neg{% endif %}">
+        {% if riga.val_e is not none %}{{ "%.2f"|format(riga.val_e) }}{% endif %}
+      </td>
+      <td class="num-prec {% if riga.val_e_prec is not none and riga.val_e_prec < 0 %}neg{% endif %}">
+        {% if riga.val_e_prec is not none %}{{ "%.2f"|format(riga.val_e_prec) }}{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<!-- FIRMA -->
+<div class="firma">
+  <div class="firma-box">Il Presidente<br><br><br></div>
+  <div class="firma-box">Il Tesoriere<br><br><br></div>
+  <div class="firma-box">Il Revisore dei Conti<br><br><br></div>
+</div>
+
+<!-- NOTA LEGALE -->
+<div class="nota">
+  Rendiconto redatto ai sensi dell'art. 13 co. 2 D.Lgs. 117/2017 (Codice del Terzo Settore) e del D.M. 39/2020 — Modello D (Rendiconto per cassa).
+  Documento generato automaticamente da CassaETS. I dati originali sono conservati in formato CSV aperto.
+</div>
+
+</body>
+</html>
