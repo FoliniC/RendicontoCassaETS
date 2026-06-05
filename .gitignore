@@ -1,0 +1,28 @@
+# Ignore Python bytecode and caches
+__pycache__/
+*.py[cod]
+
+# Ignore generated export and temporary files
+*_export*
+*.old
+*.old.*
+*.pdf
+*.xlsm
+*.xlsx
+Github.png
+
+# Ignore all CSV/DOCX except the ones required for initial installation
+*.csv
+!piano_dei_conti.csv
+
+*.docx
+!template_verbale.docx
+!template_verbale_approvazione.docx
+
+# Ignore editor/project metadata
+.vscode/
+*.log
+
+# Ignore operating system files
+.DS_Store
+Thumbs.db

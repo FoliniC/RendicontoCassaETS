@@ -8,14 +8,50 @@ Avvio: python app.py
 
 import csv
 import json
+import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tkinter as tk
 from datetime import date, datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk, simpledialog
+
+# Configurazione Logging base
+logger = logging.getLogger("CassaETS")
+
+def setup_logging(level_name: str = "INFO", log_path: str | Path = None):
+    if level_name.upper() == "NONE":
+        logging.disable(logging.CRITICAL)
+        return
+    else:
+        logging.disable(logging.NOTSET) # Riabilita se era disabilitato
+
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    
+    # Rimuove eventuali handler esistenti per evitare duplicati al cambio impostazioni
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    handlers = [logging.StreamHandler()]
+    if log_path:
+        try:
+            log_path = Path(log_path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
+        except Exception as e:
+            print(f"Impossibile creare il file di log in {log_path}: {e}")
+
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=handlers
+    )
+    logger.setLevel(level)
+    logger.info(f"Logging inizializzato a livello: {level_name} su {log_path}")
 
 # Aggiungi la directory corrente al path per importare i moduli locali
 sys.path.insert(0, str(Path(__file__).parent))
@@ -40,6 +76,14 @@ try:
 except ModuleNotFoundError:
     DOCX_DISPONIBILE = False
     genera_verbale_docx = None
+
+# Importazione excel_importer opzionale: richiede openpyxl
+try:
+    from excel_importer import import_excel_data
+    EXCEL_DISPONIBILE = True
+except ModuleNotFoundError:
+    EXCEL_DISPONIBILE = False
+    import_excel_data = None
 
 def _controlla_docxtpl() -> bool:
     """Mostra istruzioni di installazione se docxtpl non è disponibile."""
@@ -91,8 +135,8 @@ def _controlla_reportlab() -> bool:
 
 APP_TITLE   = "CassaETS"
 APP_VERSION = "1.0"
-# CONFIG_DIR è sempre nella home e non cambia mai
-CONFIG_DIR  = Path.home() / "CassaETS"
+# CONFIG_DIR è la cartella dell'applicazione (dove risiede il file app.py)
+CONFIG_DIR  = Path(__file__).resolve().parent
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 # DATA_DIR viene letta dal config all'avvio; può essere cambiata dall'utente
@@ -103,8 +147,12 @@ def _init_data_dir() -> Path:
         try:
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
             saved = cfg.get("data_dir", "")
-            if saved and Path(saved).exists():
-                return Path(saved)
+            if saved:
+                saved_path = Path(saved)
+                if not saved_path.is_absolute():
+                    saved_path = (CONFIG_DIR / saved_path).resolve()
+                if saved_path.exists():
+                    return saved_path
         except Exception:
             pass
     return CONFIG_DIR
@@ -145,29 +193,150 @@ def path_cassa(anno: int) -> Path:
 
 
 def path_config() -> Path:
-    return DATA_DIR / "config.json"
+    return CONFIG_DIR / "config.json"
 
 
 def leggi_config() -> dict:
+    default = {
+        "ente": "", "cf": "", "runts": "", 
+        "data_dir": str(CONFIG_DIR), 
+        "log_level": "INFO", 
+        "log_path": str(CONFIG_DIR / "cassaets.log"),
+        "sync_log_path": True,
+        "config_in_data_dir": False,
+        "ultimo_anno": datetime.now().year,
+        "firme": ["Il Presidente", "Il Tesoriere", "Il Revisore dei Conti"],
+        "mostra_firme": True,
+        "data_documento": date.today().strftime("%d/%m/") + "{{ anno_consuntivo }}",
+        "nota_legale": "I dati originali sono conservati in formato CSV aperto. Documento generato con CassaETS (reportlab).",
+        "nota_footer": "Rendiconto redatto ai sensi dell'art. 13 co. 2 D.Lgs. 117/2017 (Codice del Terzo Settore) e del D.M. 39/2020 Modello D.",
+        "mostra_data": True,
+        "mostra_nota_legale": True,
+        "mostra_nota_footer": True,
+        "mostra_pagine": True,
+        # Configurazioni specifiche per i verbali DOCX
+        "verbale": {
+            "mostra_firme": True,
+            "mostra_data": True,
+            "mostra_pagine": True,
+            "data_documento": date.today().strftime("%d/%m/") + "{{ anno_consuntivo }}",
+            "firme": ["Il Presidente", "Il Segretario"],
+        },
+        "approvazione": {
+            "mostra_firme": True,
+            "mostra_data": True,
+            "mostra_pagine": True,
+            "data_documento": date.today().strftime("%d/%m/") + "{{ anno_consuntivo }}",
+            "firme": ["Il Presidente", "Il Segretario"],
+        }
+    }
     p = CONFIG_DIR / "config.json"
+    saved = {}
     if p.exists():
-        return json.loads(p.read_text(encoding="utf-8"))
-    return {"ente": "", "cf": "", "runts": "", "data_dir": ""}
+        try:
+            saved = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            saved = {}
+
+    if saved.get("config_in_data_dir") and saved.get("data_dir"):
+        data_dir = Path(saved["data_dir"])
+        if not data_dir.is_absolute():
+            data_dir = (CONFIG_DIR / data_dir).resolve()
+        alt = data_dir / "config.json"
+        if alt.exists():
+            try:
+                saved = json.loads(alt.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+    if isinstance(saved.get("data_dir"), str) and saved["data_dir"]:
+        data_dir = Path(saved["data_dir"])
+        if not data_dir.is_absolute():
+            saved["data_dir"] = str((CONFIG_DIR / data_dir).resolve())
+        else:
+            saved["data_dir"] = str(data_dir)
+
+    if isinstance(saved.get("log_path"), str) and saved["log_path"]:
+        log_path = Path(saved["log_path"])
+        if not log_path.is_absolute():
+            saved["log_path"] = str((CONFIG_DIR / log_path).resolve())
+        else:
+            saved["log_path"] = str(log_path)
+
+    # Uniamo i dati salvati con i default
+    for k, v in saved.items():
+        if k in default:
+            if isinstance(v, str) and not v.strip() and k in ("nota_legale", "nota_footer"):
+                continue
+            if k == "firme" and not v:
+                continue
+            if isinstance(v, dict) and k in ("verbale", "approvazione"):
+                default[k].update(v)
+                continue
+            default[k] = v
+    return default
 
 
 def salva_config(cfg: dict) -> None:
+    # Assicurati che le chiavi essenziali esistano
+    default = {
+        "ente": "", "cf": "", "runts": "", 
+        "data_dir": str(CONFIG_DIR), 
+        "log_level": "INFO",
+        "log_path": str(CONFIG_DIR / "cassaets.log"),
+        "sync_log_path": True,
+        "config_in_data_dir": False,
+        "ultimo_anno": datetime.now().year,
+        "firme": ["Il Presidente", "Il Tesoriere", "Il Revisore dei Conti"],
+        "mostra_firme": True,
+        "data_documento": date.today().strftime("%d/%m/") + "{{ anno_consuntivo }}",
+        "nota_legale": "I dati originali sono conservati in formato CSV aperto. Documento generato con CassaETS (reportlab).",
+        "nota_footer": "Rendiconto redatto ai sensi dell'art. 13 co. 2 D.Lgs. 117/2017 (Codice del Terzo Settore) e del D.M. 39/2020 Modello D.",
+        "mostra_data": True,
+        "mostra_nota_legale": True,
+        "mostra_nota_footer": True,
+        "mostra_pagine": True
+    }
+    default.update(cfg)
+
+    # Normalize paths for consistent startup behavior
+    data_dir = Path(default.get("data_dir", str(CONFIG_DIR))).expanduser()
+    if not data_dir.is_absolute():
+        data_dir = (CONFIG_DIR / data_dir).resolve()
+    default["data_dir"] = str(data_dir)
+
+    log_path = Path(default.get("log_path", str(CONFIG_DIR / "cassaets.log"))).expanduser()
+    if not log_path.is_absolute():
+        log_path = (CONFIG_DIR / log_path).resolve()
+    default["log_path"] = str(log_path)
+
     p = CONFIG_DIR / "config.json"
-    p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    if default.get("config_in_data_dir", False):
+        p = data_dir / "config.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(default, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Keep a mirror in the execution folder so startup trova sempre la configurazione.
+        mirror = CONFIG_DIR / "config.json"
+        mirror.write_text(json.dumps(default, ensure_ascii=False, indent=2), encoding="utf-8")
+    else:
+        p.write_text(json.dumps(default, ensure_ascii=False, indent=2), encoding="utf-8")
     
+import re
+
 def anni_disponibili() -> list[int]:
     ensure_data_dir()
-    anni = []
+    anni = set()
+    # Pattern regex per beccare esattamente cassa_ seguito da 4 cifre e basta
+    pattern = re.compile(r"^cassa_(\d{4})\.csv$")
+    
     for f in DATA_DIR.glob("cassa_*.csv"):
-        try:
-            anni.append(int(f.stem.split("_")[1]))
-        except ValueError:
-            pass
-    return sorted(anni, reverse=True)
+        match = pattern.match(f.name)
+        if match:
+            try:
+                anni.add(int(match.group(1)))
+            except ValueError:
+                pass
+    return sorted(list(anni), reverse=True)
 
 
 def nuovo_anno_csv(anno: int) -> None:
@@ -422,7 +591,14 @@ class CassaETS(tk.Tk):
         super().__init__()
         ensure_data_dir()
         self.config_data = leggi_config()
-        self.anno_corrente = tk.IntVar(value=datetime.now().year)
+        setup_logging(
+            self.config_data.get("log_level", "INFO"),
+            self.config_data.get("log_path", CONFIG_DIR / "cassaets.log")
+        )
+        
+        # Ripristina l'ultimo anno salvato
+        ultimo = self.config_data.get("ultimo_anno", datetime.now().year)
+        self.anno_corrente = tk.IntVar(value=ultimo)
         self.movimenti: list[Movimento] = []
 
         self.title(f"{APP_TITLE} {APP_VERSION}")
@@ -515,6 +691,9 @@ class CassaETS(tk.Tk):
         anni = anni_disponibili()
         if not anni:
             anni = [datetime.now().year]
+
+        if self.anno_corrente.get() not in anni:
+            self.anno_corrente.set(anni[0])
 
         self.combo_anno = ttk.Combobox(
             self.sidebar,
@@ -954,6 +1133,13 @@ class CassaETS(tk.Tk):
              "Utilizza il file template_verbale.docx (se presente) o permette di caricarne uno.")
 
         card(p,
+             "📝 Verbale di Approvazione (DOCX)",
+             "Genera la bozza del verbale di approvazione bilancio in formato Word.",
+             "Genera Verbale Approvazione →",
+             self._esporta_verbale_approvazione_docx,
+             "Utilizza il file template_verbale_approvazione.docx (se presente) o permette di caricarne uno.")
+
+        card(p,
              "📋 JSON Prima Nota",
              "Esporta tutti i movimenti dell'anno in formato JSON. "
              "Formato aperto, importabile in qualsiasi applicazione.",
@@ -984,11 +1170,26 @@ class CassaETS(tk.Tk):
         if not _controlla_reportlab():
             return
         if not hasattr(self, "bilancio_corrente"):
-            messagebox.showinfo("Info",
-                                "Genera prima il bilancio dalla pagina "
-                                "'Bilancio' o dalla sidebar.")
-            return
+            self._genera_bilancio()
+            if not hasattr(self, "bilancio_corrente"):
+                return
+        
+        # Recupera configurazione aggiornata (contingente ai check in UI se presenti)
         cfg = leggi_config()
+        # Se siamo nella pagina impostazioni, potremmo voler usare i valori a video
+        # Ma di norma usiamo quelli salvati. Per sicurezza aggiorniamo cfg dai widget
+        # se l'utente ha modificato qualcosa ma non ha salvato.
+        if hasattr(self, "var_mostra_data"):
+             cfg["mostra_data"] = self.var_mostra_data.get()
+             cfg["mostra_pagine"] = self.var_mostra_pagine.get()
+             cfg["mostra_nota_legale"] = self.var_mostra_nota_legale.get()
+             cfg["mostra_nota_footer"] = self.var_mostra_nota_footer.get()
+             cfg["mostra_firme"] = self.var_mostra_firme.get()
+             cfg["data_documento"] = self.var_data_documento.get().strip()
+
+        # Risolvi placeholder data
+        data_risolta = cfg.get("data_documento", "").replace("{{ anno_consuntivo }}", str(self.anno_corrente.get()))
+
         path = filedialog.asksaveasfilename(
             defaultextension=".pdf",
             filetypes=[("PDF", "*.pdf")],
@@ -1000,7 +1201,13 @@ class CassaETS(tk.Tk):
         try:
             genera_pdf(self.bilancio_corrente, path,
                        cf=cfg.get("cf", ""),
-                       iscrizione_runts=cfg.get("runts", ""))
+                       iscrizione_runts=cfg.get("runts", ""),
+                       firme=cfg.get("firme") if cfg.get("mostra_firme", True) else None,
+                       nota_legale=cfg.get("nota_legale") if cfg.get("mostra_nota_legale", True) else "",
+                       nota_footer=cfg.get("nota_footer") if cfg.get("mostra_nota_footer", True) else "",
+                       mostra_data=cfg.get("mostra_data", True),
+                       mostra_pagine=cfg.get("mostra_pagine", True),
+                       data_stampa_manuale=data_risolta)
             messagebox.showinfo("PDF generato", f"File salvato:\n{path}")
             self._apri_file(path)
         except Exception as e:
@@ -1014,41 +1221,94 @@ class CassaETS(tk.Tk):
         self._esporta_pdf()
 
     def _esporta_verbale_docx(self):
+        self._esporta_verbale_base("template_verbale.docx", "Verbale_Assemblea", includi_tabella=True, cfg_key="verbale")
+
+    def _esporta_verbale_approvazione_docx(self):
+        # In questo verbale non va messo il pdf del bilancio
+        self._esporta_verbale_base("template_verbale_approvazione.docx", "Verbale_Approvazione", includi_tabella=False, cfg_key="approvazione")
+
+    def _esporta_verbale_base(self, template_nome: str, prefix_output: str, includi_tabella: bool = True, cfg_key: str = "verbale"):
         if not _controlla_docxtpl():
             return
         if not hasattr(self, "bilancio_corrente"):
             self._genera_bilancio()
-            if not hasattr(self, "bilancio_corrente"): # Se fallisce (es. nessun movimento)
+            if not hasattr(self, "bilancio_corrente"):
                 return
 
-        # Cerca il template citato dall'utente
-        template_nome = "Bilancio20250522Consuntivo2024EPreventivo2025.docx"
-        template_path = Path(__file__).parent / template_nome
-        
+        # Cerca il template
+        template_path = Path(__file__).resolve().parent / template_nome
         if not template_path.exists():
-            messagebox.showinfo("Template non trovato", 
-                                f"Il file template '{template_nome}' non è stato trovato.\n\n"
-                                "Per favore, seleziona il file template DOCX da utilizzare.")
-            template_path_str = filedialog.askopenfilename(
-                filetypes=[("Word Document", "*.docx")],
-                title="Seleziona il template DOCX"
-            )
-            if not template_path_str:
-                return
-            template_path = Path(template_path_str)
+            tried_dirs = []
+            if self.var_data_dir.get().strip():
+                tried_dirs.append(Path(self.var_data_dir.get().strip()))
+            tried_dirs.append(DATA_DIR)
+            tried_dirs.extend([Path(__file__).resolve().parent, Path.cwd()])
+            found = False
+            for candidate_dir in dict.fromkeys(tried_dirs):
+                candidate = candidate_dir / template_nome
+                if candidate.exists():
+                    template_path = candidate
+                    logger.info(f"Trovato template '{template_nome}' in {candidate_dir}: {template_path}")
+                    found = True
+                    break
+            if not found:
+                logger.info(
+                    f"Template '{template_nome}' non trovato in app dir ({Path(__file__).resolve().parent}), "
+                    f"cwd ({Path.cwd()}) o data dir ({DATA_DIR})"
+                )
+                messagebox.showinfo("Template non trovato",
+                                    f"Il file template '{template_nome}' non è stato trovato.\n\n"
+                                    "Per favore, seleziona il file template DOCX da utilizzare.")
+                template_path_str = filedialog.askopenfilename(
+                    filetypes=[("Word Document", "*.docx")],
+                    title=f"Seleziona il template per {template_nome}"
+                )
+                if not template_path_str:
+                    return
+                template_path = Path(template_path_str)
+
+        if not template_path.exists():
+            messagebox.showerror("Template non valido",
+                                 f"Il file selezionato non esiste:\n{template_path}")
+            return
             
         out_path = filedialog.asksaveasfilename(
             defaultextension=".docx",
             filetypes=[("Word Document", "*.docx")],
-            initialfile=f"Verbale_Assemblea_{self.anno_corrente.get()}.docx",
-            title="Salva Verbale DOCX"
+            initialfile=f"{prefix_output}_{self.anno_corrente.get()}.docx",
+            title="Salva Documento Word"
         )
         if not out_path:
             return
             
         try:
-            genera_verbale_docx(self.bilancio_corrente, template_path, out_path)
-            messagebox.showinfo("DOCX generato", f"File salvato:\n{out_path}")
+            cfg_full = leggi_config()
+            # Estraiamo la configurazione specifica
+            cfg = cfg_full.get(cfg_key, {})
+            
+            # Se siamo nella pagina impostazioni, potremmo voler usare i valori a video
+            # (Ma per semplicità qui ricarichiamo dal file salvato o usiamo i default)
+
+            # Risolvi placeholder data
+            data_risolta = cfg.get("data_documento", "").replace("{{ anno_consuntivo }}", str(self.anno_corrente.get()))
+
+            logger.info(f"Generating DOCX using template {template_path} -> {out_path}")
+            genera_verbale_docx(
+                self.bilancio_corrente, 
+                template_path, 
+                out_path,
+                genera_pdf_func=genera_pdf if includi_tabella else None,
+                cf=cfg_full.get("cf", ""),
+                runts=cfg_full.get("runts", ""),
+                firme=cfg.get("firme") if cfg.get("mostra_firme", True) else None,
+                nota_legale=cfg_full.get("nota_legale") if cfg_full.get("mostra_nota_legale", True) else "",
+                nota_footer=cfg_full.get("nota_footer") if cfg_full.get("mostra_nota_footer", True) else "",
+                mostra_data=cfg.get("mostra_data", True),
+                mostra_pagine=cfg.get("mostra_pagine", True),
+                data_manuale=data_risolta
+            )
+            logger.info(f"Generated DOCX document: {out_path}")
+            messagebox.showinfo("Documento generato", f"File salvato:\n{out_path}")
             self._apri_file(out_path)
         except Exception as e:
             messagebox.showerror("Errore DOCX", str(e))
@@ -1099,15 +1359,47 @@ class CassaETS(tk.Tk):
     def _build_impostazioni(self):
         p = self.page_impostazioni
 
-        ttk.Label(p, text="Impostazioni ente", style="Title.TLabel").pack(anchor="w", pady=(8, 16))
+        # Crea un canvas scorrevole per le impostazioni
+        canvas = tk.Canvas(p, bg=C_BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(p, orient="vertical", command=canvas.yview)
+        scroll_frame = ttk.Frame(canvas, style="Content.TFrame")
 
-        fr = ttk.Frame(p, style="Content.TFrame")
-        fr.pack(anchor="w", padx=20)
+        scroll_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        
+        def _on_canvas_configure(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _bind_mousewheel(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _unbind_mousewheel(event):
+            canvas.unbind_all("<MouseWheel>")
+        
+        canvas.bind("<Configure>", _on_canvas_configure)
+        scroll_frame.bind("<Enter>", _bind_mousewheel)
+        scroll_frame.bind("<Leave>", _unbind_mousewheel)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        ttk.Label(scroll_frame, text="Impostazioni ente", style="Title.TLabel").pack(anchor="w", pady=(8, 16), padx=20)
+
+        fr = ttk.Frame(scroll_frame, style="Content.TFrame")
+        fr.pack(anchor="w", padx=20, fill="x")
 
         cfg = leggi_config()
 
-        def riga(label, var, width=40):
-            row = ttk.Frame(fr, style="Content.TFrame")
+        def riga(parent, label, var, width=40):
+            row = ttk.Frame(parent, style="Content.TFrame")
             row.pack(fill="x", pady=5)
             ttk.Label(row, text=label, width=24, anchor="e").pack(side="left", padx=(0, 8))
             ttk.Entry(row, textvariable=var, width=width,
@@ -1116,13 +1408,136 @@ class CassaETS(tk.Tk):
         self.var_ente  = tk.StringVar(value=cfg.get("ente", ""))
         self.var_cf    = tk.StringVar(value=cfg.get("cf", ""))
         self.var_runts = tk.StringVar(value=cfg.get("runts", ""))
+        self.var_log_level = tk.StringVar(value=cfg.get("log_level", "INFO"))
+        self.var_log_path = tk.StringVar(value=cfg.get("log_path", str(CONFIG_DIR / "cassaets.log")))
+        self.var_config_in_data_dir = tk.BooleanVar(value=cfg.get("config_in_data_dir", False))
+        self.var_config_path = tk.StringVar()
 
-        riga("Nome ente:",        self.var_ente, 50)
-        riga("Codice fiscale:",   self.var_cf,   20)
-        riga("Iscrizione RUNTS:", self.var_runts, 20)
+        riga(fr, "Nome ente:",        self.var_ente, 50)
+        riga(fr, "Codice fiscale:",   self.var_cf,   20)
+        riga(fr, "Iscrizione RUNTS:", self.var_runts, 20)
 
-        ttk.Label(fr, text="I dati vengono usati nell'intestazione del PDF.",
-                  foreground=C_MUTED, font=("Helvetica", 9)).pack(anchor="w", pady=(8, 0))
+        row_log_level = ttk.Frame(fr, style="Content.TFrame")
+        row_log_level.pack(fill="x", pady=5)
+        ttk.Label(row_log_level, text="Livello log:", width=24, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Combobox(row_log_level, textvariable=self.var_log_level,
+                     values=["NONE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                     width=12, state="readonly").pack(side="left")
+
+        row_log = ttk.Frame(fr, style="Content.TFrame")
+        row_log.pack(fill="x", pady=5)
+        ttk.Label(row_log, text="Percorso log:", width=24, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row_log, textvariable=self.var_log_path, width=40,
+                  font=("Helvetica", 10)).pack(side="left")
+
+        def scegli_log_dir():
+            iniziale = Path(self.var_log_path.get() or CONFIG_DIR)
+            if iniziale.is_file():
+                iniziale = iniziale.parent
+            nuova_dir = filedialog.askdirectory(
+                title="Scegli la directory dei log",
+                initialdir=str(iniziale)
+            )
+            if nuova_dir:
+                self.var_log_path.set(str(Path(nuova_dir) / "cassaets.log"))
+
+        ttk.Button(row_log, text="📂 Sfoglia…", command=scegli_log_dir).pack(side="left", padx=(6, 0))
+
+        ttk.Checkbutton(fr,
+                        text="Memorizza config.json nella cartella dati",
+                        variable=self.var_config_in_data_dir,
+                        command=self._refresh_config_path_display).pack(anchor="w", pady=(8, 4))
+
+        row_cfg = ttk.Frame(fr, style="Content.TFrame")
+        row_cfg.pack(fill="x", pady=5)
+        ttk.Label(row_cfg, text="Percorso config.json:", width=24, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row_cfg, textvariable=self.var_config_path, width=40,
+                  font=("Helvetica", 10), state="readonly").pack(side="left")
+        self._refresh_config_path_display()
+        
+        # --- PERSONALIZZAZIONE DOCUMENTI ---
+        ttk.Separator(fr).pack(fill="x", pady=15)
+        ttk.Label(fr, text="Personalizzazione Rendiconto PDF",
+                  font=("Helvetica", 10, "bold")).pack(anchor="w")
+
+        self.var_firme = tk.StringVar(value=", ".join(cfg["firme"]))
+        self.var_mostra_firme = tk.BooleanVar(value=cfg["mostra_firme"])
+        row_firme = ttk.Frame(fr, style="Content.TFrame")
+        row_firme.pack(fill="x", pady=5)
+        ttk.Label(row_firme, text="Firme (separate da virgola):", width=24, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row_firme, textvariable=self.var_firme, width=40, font=("Helvetica", 10)).pack(side="left")
+        ttk.Checkbutton(row_firme, text="Includi", variable=self.var_mostra_firme).pack(side="left", padx=10)
+        
+        self.var_nota_legale = tk.StringVar(value=cfg["nota_legale"])
+        self.var_mostra_nota_legale = tk.BooleanVar(value=cfg["mostra_nota_legale"])
+        row_nl = ttk.Frame(fr, style="Content.TFrame")
+        row_nl.pack(fill="x", pady=5)
+        ttk.Label(row_nl, text="Nota finale:", width=24, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row_nl, textvariable=self.var_nota_legale, width=40, font=("Helvetica", 10)).pack(side="left")
+        ttk.Checkbutton(row_nl, text="Includi", variable=self.var_mostra_nota_legale).pack(side="left", padx=10)
+        
+        self.var_nota_footer = tk.StringVar(value=cfg["nota_footer"])
+        self.var_mostra_nota_footer = tk.BooleanVar(value=cfg["mostra_nota_footer"])
+        row_nf = ttk.Frame(fr, style="Content.TFrame")
+        row_nf.pack(fill="x", pady=5)
+        ttk.Label(row_nf, text="Nota a piè pagina:", width=24, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row_nf, textvariable=self.var_nota_footer, width=40, font=("Helvetica", 10)).pack(side="left")
+        ttk.Checkbutton(row_nf, text="Includi", variable=self.var_mostra_nota_footer).pack(side="left", padx=10)
+        
+        self.var_data_documento = tk.StringVar(value=cfg["data_documento"])
+        row_dd = ttk.Frame(fr, style="Content.TFrame")
+        row_dd.pack(fill="x", pady=5)
+        ttk.Label(row_dd, text="Data documento:", width=24, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row_dd, textvariable=self.var_data_documento, width=40, font=("Helvetica", 10)).pack(side="left")
+        ttk.Label(row_dd, text="(usa {{ anno_consuntivo }})", foreground=C_MUTED, font=("Helvetica", 8)).pack(side="left", padx=5)
+
+        self.var_mostra_data = tk.BooleanVar(value=cfg["mostra_data"])
+        self.var_mostra_pagine = tk.BooleanVar(value=cfg["mostra_pagine"])
+        row_data = ttk.Frame(fr, style="Content.TFrame")
+        row_data.pack(fill="x", pady=5)
+        ttk.Label(row_data, text="", width=24).pack(side="left", padx=(0, 8))
+        ttk.Checkbutton(row_data, text="Mostra data di stampa", variable=self.var_mostra_data).pack(side="left")
+        ttk.Checkbutton(row_data, text="Mostra numeri di pagina", variable=self.var_mostra_pagine).pack(side="left", padx=20)
+
+        # --- DOCX VERBALE ASSEMBLEA ---
+        ttk.Separator(fr).pack(fill="x", pady=15)
+        ttk.Label(fr, text="Personalizzazione Verbale Assemblea (DOCX)",
+                  font=("Helvetica", 10, "bold")).pack(anchor="w")
+
+        v_cfg = cfg.get("verbale", {})
+        self.var_v_firme = tk.StringVar(value=", ".join(v_cfg.get("firme", [])))
+        self.var_v_mostra_firme = tk.BooleanVar(value=v_cfg.get("mostra_firme", True))
+        row_v_firme = ttk.Frame(fr, style="Content.TFrame")
+        row_v_firme.pack(fill="x", pady=5)
+        ttk.Label(row_v_firme, text="Firme:", width=24, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row_v_firme, textvariable=self.var_v_firme, width=40, font=("Helvetica", 10)).pack(side="left")
+        ttk.Checkbutton(row_v_firme, text="Includi", variable=self.var_v_mostra_firme).pack(side="left", padx=10)
+
+        self.var_v_data_doc = tk.StringVar(value=v_cfg.get("data_documento", ""))
+        row_v_dd = ttk.Frame(fr, style="Content.TFrame")
+        row_v_dd.pack(fill="x", pady=5)
+        ttk.Label(row_v_dd, text="Data verbale:", width=24, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row_v_dd, textvariable=self.var_v_data_doc, width=40, font=("Helvetica", 10)).pack(side="left")
+
+        # --- DOCX VERBALE APPROVAZIONE ---
+        ttk.Separator(fr).pack(fill="x", pady=15)
+        ttk.Label(fr, text="Personalizzazione Verbale Approvazione (DOCX)",
+                  font=("Helvetica", 10, "bold")).pack(anchor="w")
+
+        a_cfg = cfg.get("approvazione", {})
+        self.var_a_firme = tk.StringVar(value=", ".join(a_cfg.get("firme", [])))
+        self.var_a_mostra_firme = tk.BooleanVar(value=a_cfg.get("mostra_firme", True))
+        row_a_firme = ttk.Frame(fr, style="Content.TFrame")
+        row_a_firme.pack(fill="x", pady=5)
+        ttk.Label(row_a_firme, text="Firme:", width=24, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row_a_firme, textvariable=self.var_a_firme, width=40, font=("Helvetica", 10)).pack(side="left")
+        ttk.Checkbutton(row_a_firme, text="Includi", variable=self.var_a_mostra_firme).pack(side="left", padx=10)
+
+        self.var_a_data_doc = tk.StringVar(value=a_cfg.get("data_documento", ""))
+        row_a_dd = ttk.Frame(fr, style="Content.TFrame")
+        row_a_dd.pack(fill="x", pady=5)
+        ttk.Label(row_a_dd, text="Data approvazione:", width=24, anchor="e").pack(side="left", padx=(0, 8))
+        ttk.Entry(row_a_dd, textvariable=self.var_a_data_doc, width=40, font=("Helvetica", 10)).pack(side="left")
 
         ttk.Button(fr, text="💾 Salva impostazioni",
                    style="Accent.TButton",
@@ -1134,9 +1549,7 @@ class CassaETS(tk.Tk):
         ttk.Label(fr, text="Directory dati",
                   font=("Helvetica", 10, "bold")).pack(anchor="w")
         ttk.Label(fr,
-                  text="Cartella dove vengono letti e salvati i file CSV. "
-                       "Puoi cambiarla per puntare a una directory esistente "
-                       "(es. dove hai scaricato cassa_2025.csv).",
+                  text="Cartella dove vengono letti e salvati i file CSV.",
                   foreground=C_MUTED, font=("Helvetica", 9),
                   wraplength=560, justify="left").pack(anchor="w", pady=(2, 6))
 
@@ -1159,6 +1572,11 @@ class CassaETS(tk.Tk):
         ttk.Button(row_dir, text="📂 Sfoglia…",
                    command=scegli_directory).pack(side="left")
 
+        self.var_sync_log = tk.BooleanVar(value=cfg.get("sync_log_path", True))
+        ttk.Checkbutton(fr, text="Aggiorna automaticamente il percorso log quando cambia la directory dati",
+                        variable=self.var_sync_log,
+                        command=self._salva_impostazioni).pack(anchor="w", pady=(2, 8))
+
         ttk.Button(fr, text="✅ Applica directory",
                    style="Accent.TButton",
                    command=self._applica_data_dir).pack(anchor="w", pady=(8, 4))
@@ -1172,6 +1590,49 @@ class CassaETS(tk.Tk):
         ttk.Button(fr, text="📂 Apri directory corrente",
                    command=lambda: self._apri_file(str(DATA_DIR))).pack(anchor="w")
 
+        ttk.Separator(fr).pack(fill="x", pady=12)
+
+        # ── Importazione Excel ──────────────────────────────────────────────
+        ttk.Label(fr, text="Importazione Excel",
+                  font=("Helvetica", 10, "bold")).pack(anchor="w")
+        ttk.Label(fr,
+                  text="Importa i movimenti dai fogli 'Cassa_XXXX' di un file .xlsm. "
+                       "I dati verranno convertiti in file CSV nella directory corrente.",
+                  foreground=C_MUTED, font=("Helvetica", 9),
+                  wraplength=560, justify="left").pack(anchor="w", pady=(2, 6))
+
+        ttk.Button(fr, text="📊 Importa dati da Excel (.xlsm)",
+                   command=self._importa_excel).pack(anchor="w", pady=4)
+
+    def _importa_excel(self):
+        if not EXCEL_DISPONIBILE:
+            pip_cmd = f'"{sys.executable}" -m pip install openpyxl'
+            messagebox.showerror(
+                "Libreria mancante — openpyxl",
+                "Per importare da Excel è necessaria la libreria openpyxl.\n\n"
+                "Per installarla apri il Prompt dei comandi e digita:\n\n"
+                f"    {pip_cmd}"
+            )
+            return
+
+        file_path = filedialog.askopenfilename(
+            title="Seleziona il file Excel (.xlsm)",
+            filetypes=[("Excel Macro-Enabled Workbook", "*.xlsm"), ("Excel Workbook", "*.xlsx")]
+        )
+        if not file_path:
+            return
+
+        try:
+            import_excel_data(file_path, str(DATA_DIR))
+            messagebox.showinfo("Importazione completata", 
+                                "I dati sono stati importati correttamente.\n"
+                                "Riavvia l'applicazione o cambia anno per vedere i nuovi dati.")
+            # Aggiorna gli anni disponibili
+            anni = anni_disponibili()
+            self.combo_anno["values"] = anni
+        except Exception as e:
+            messagebox.showerror("Errore importazione", str(e))
+
     def _applica_data_dir(self):
         global DATA_DIR
         nuova = Path(self.var_data_dir.get().strip())
@@ -1184,9 +1645,17 @@ class CassaETS(tk.Tk):
 
         DATA_DIR = nuova
 
-        # Persisti la scelta nel config
+        # Persisti la scelta nel config e aggiorna il percorso log se richiesto
         cfg = leggi_config()
         cfg["data_dir"] = str(DATA_DIR)
+        
+        if self.var_sync_log.get():
+            nuovo_log = DATA_DIR / "cassaets.log"
+            cfg["log_path"] = str(nuovo_log)
+            self.var_log_path.set(str(nuovo_log))
+            setup_logging(self.var_log_level.get(), str(nuovo_log))
+        
+        cfg["config_in_data_dir"] = self.var_config_in_data_dir.get()
         salva_config(cfg)
 
         # Aggiorna combo anni con i file trovati nella nuova directory
@@ -1196,35 +1665,93 @@ class CassaETS(tk.Tk):
         if anni:
             self.anno_corrente.set(anni[0])
             self._carica_anno()
+            self._refresh_config_path_display()
+            logger.info("Directory dati aggiornata: %s. Anni trovati: %s", DATA_DIR, ", ".join(str(a) for a in anni))
             messagebox.showinfo("Directory aggiornata",
                                 f"Directory impostata:\n{DATA_DIR}\n\n"
                                 f"Anni trovati: {', '.join(str(a) for a in anni)}")
         else:
+            logger.warning("Nessun file cassa_*.csv trovato nella directory dati: %s", DATA_DIR)
             messagebox.showinfo("Directory aggiornata",
                                 f"Directory impostata:\n{DATA_DIR}\n\n"
                                 "Nessun file cassa_ANNO.csv trovato.\n"
                                 "Copia i tuoi CSV qui oppure usa '+ Nuovo anno'.")
 
+    def _get_config_path_for_ui(self) -> str:
+        if getattr(self, "var_config_in_data_dir", None) and self.var_config_in_data_dir.get():
+            cartella = Path(self.var_data_dir.get().strip() or str(DATA_DIR))
+            return str((cartella / "config.json").resolve())
+        return str((CONFIG_DIR / "config.json").resolve())
+
+    def _refresh_config_path_display(self) -> None:
+        if hasattr(self, "var_config_path"):
+            self.var_config_path.set(self._get_config_path_for_ui())
+
     def _salva_impostazioni(self):
+        new_level = self.var_log_level.get()
+        new_path = self.var_log_path.get().strip()
+        
+        # Parsa le firme dalla stringa
+        firme_list = [f.strip() for f in self.var_firme.get().split(",") if f.strip()]
+        if not firme_list:
+            firme_list = ["Il Presidente", "Il Tesoriere", "Il Revisore dei Conti"]
+
         salva_config({
             "ente":  self.var_ente.get().strip(),
             "cf":    self.var_cf.get().strip(),
             "runts": self.var_runts.get().strip(),
+            "data_dir": self.var_data_dir.get().strip(),
+            "log_level": new_level,
+            "log_path": new_path,
+            "sync_log_path": self.var_sync_log.get(),
+            "config_in_data_dir": self.var_config_in_data_dir.get(),
+            "firme": firme_list,
+            "mostra_firme": self.var_mostra_firme.get(),
+            "data_documento": self.var_data_documento.get().strip(),
+            "nota_legale": self.var_nota_legale.get().strip(),
+            "nota_footer": self.var_nota_footer.get().strip(),
+            "mostra_data": self.var_mostra_data.get(),
+            "mostra_nota_legale": self.var_mostra_nota_legale.get(),
+            "mostra_nota_footer": self.var_mostra_nota_footer.get(),
+            "mostra_pagine": self.var_mostra_pagine.get(),
+            "verbale": {
+                "firme": [f.strip() for f in self.var_v_firme.get().split(",") if f.strip()],
+                "mostra_firme": self.var_v_mostra_firme.get(),
+                "data_documento": self.var_v_data_doc.get().strip(),
+                "mostra_data": True,
+                "mostra_pagine": True
+            },
+            "approvazione": {
+                "firme": [f.strip() for f in self.var_a_firme.get().split(",") if f.strip()],
+                "mostra_firme": self.var_a_mostra_firme.get(),
+                "data_documento": self.var_a_data_doc.get().strip(),
+                "mostra_data": True,
+                "mostra_pagine": True
+            }
         })
+        setup_logging(new_level, new_path)
+        self._refresh_config_path_display()
         messagebox.showinfo("Salvato", "Impostazioni aggiornate.")
 
     # ── Gestione anni e CSV ───────────────────────────────────────────────
 
     def _carica_anno(self):
         anno = self.anno_corrente.get()
+        # Salva l'anno corrente come ultimo anno nel config
+        cfg = leggi_config()
+        cfg["ultimo_anno"] = anno
+        salva_config(cfg)
+        
         p = path_cassa(anno)
         if p.exists():
             try:
                 self.movimenti = leggi_cassa(p)
             except Exception as e:
+                logger.exception("Errore lettura CSV da %s", p)
                 messagebox.showerror("Errore lettura CSV", str(e))
                 self.movimenti = []
         else:
+            logger.warning("CSV non trovato per l'anno %s: %s", anno, p)
             self.movimenti = []
         self._aggiorna_tabella()
         # Reset bilancio corrente
@@ -1262,4 +1789,12 @@ class CassaETS(tk.Tk):
 
 if __name__ == "__main__":
     app = CassaETS()
-    app.mainloop()
+    signal.signal(signal.SIGINT, lambda signum, frame: app.quit())
+    try:
+        app.mainloop()
+    except KeyboardInterrupt:
+        logger.info("Interruzione da tastiera ricevuta, chiusura pulita.")
+        try:
+            app.destroy()
+        except Exception:
+            pass

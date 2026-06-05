@@ -117,9 +117,9 @@ def _costruisci_dati_tabella(bil: Bilancio) -> list[tuple]:
 
         # Valori
         val_u = _fmt(u["c"], vuoto_se_zero=(tipo == "voce")) if u and tipo != "intestazione" else ""
-        prec_u = _fmt(u["p"], vuoto_se_zero=True) if u and tipo == "voce" else ""
+        prec_u = _fmt(u["p"], vuoto_se_zero=True) if u and tipo != "intestazione" else ""
         val_e = _fmt(e["c"], vuoto_se_zero=(tipo == "voce")) if e and tipo != "intestazione" else ""
-        prec_e = _fmt(e["p"], vuoto_se_zero=True) if e and tipo == "voce" else ""
+        prec_e = _fmt(e["p"], vuoto_se_zero=True) if e and tipo != "intestazione" else ""
 
         righe.append((
             lbl_fmt(u, "u"), val_u, prec_u,
@@ -128,41 +128,46 @@ def _costruisci_dati_tabella(bil: Bilancio) -> list[tuple]:
         ))
 
     # Righe finali
-    anno = bil.anno
+    # Estraiamo i dati dell'anno precedente per i totali se disponibili
+    val_p = {}
+    for r in bil.righe:
+        val_p[r.codice] = r.importo_precedente
+
+    def get_p(cod):
+        return val_p.get(cod, 0.0)
+
     righe += [
-        ("Totale uscite della gestione",
-         _fmt(bil.totale_uscite), "",
-         "Totale entrate della gestione",
-         _fmt(bil.totale_entrate), "",
+        # Riga 46: Totale gestione
+        ("Totale uscite della gestione", _fmt(bil.totale_uscite), _fmt(get_p("Z.U.11"), True),
+         "Totale entrate della gestione", _fmt(bil.totale_entrate), _fmt(get_p("Z.E.11"), True),
          "totale_gestione"),
 
+        # Riga 47: Avanzo/disavanzo prima imposte
         ("", "", "",
-         "Avanzo/disavanzo d'esercizio prima delle imposte",
-         _fmt(bil.avanzo_esercizio), "",
+         "Avanzo/disavanzo d'esercizio prima delle imposte", _fmt(bil.avanzo_esercizio), _fmt(get_p("Z.E.12"), True),
          "avanzo" if bil.avanzo_esercizio >= 0 else "avanzo_neg"),
 
+        # Riga 48: Imposte
         ("", "", "",
-         "Imposte",
-         _fmt(bil.imposte, vuoto_se_zero=True), "",
+         "Imposte", _fmt(bil.imposte, vuoto_se_zero=True), _fmt(get_p("Z.E.13"), True),
          "finale"),
 
+        # Riga 49: Avanzo/disavanzo finale
         ("", "", "",
-         "Avanzo/disavanzo prima di investimenti patrimoniali",
-         _fmt(bil.avanzo_finale), "",
+         "Avanzo/disavanzo prima di investimenti patrimoniali", _fmt(bil.avanzo_finale), _fmt(get_p("Z.E.14"), True),
          "avanzo" if bil.avanzo_finale >= 0 else "avanzo_neg"),
 
-        ("Cassa",
-         _fmt(bil.saldo_cassa), "",
+        # Righe 50-51: Saldi di Cassa e CC
+        ("Cassa", _fmt(bil.saldo_cassa), _fmt(get_p("Z.U.12"), True),
          "", "", "",
          "saldo"),
 
-        ("Conto corrente",
-         _fmt(bil.saldo_cc), "",
+        ("Conto corrente", _fmt(bil.saldo_cc), _fmt(get_p("Z.U.13"), True),
          "", "", "",
          "saldo"),
 
-        ("Totale generale",
-         _fmt(bil.totale_generale), "",
+        # Riga 52: Totale generale
+        ("Totale generale", _fmt(bil.totale_generale), _fmt(get_p("Z.U.14"), True),
          "", "", "",
          "totale_generale"),
     ]
@@ -188,8 +193,8 @@ def _build_table_style(dati: list[tuple], header_rows: int = 1) -> TableStyle:
         ("TOPPADDING",    (0,0), (-1,-1), 2.5),
         ("BOTTOMPADDING", (0,0), (-1,-1), 2.5),
         # Numeri a destra
-        ("ALIGN",         (1,1), (2,-1), "RIGHT"),
-        ("ALIGN",         (4,1), (5,-1), "RIGHT"),
+        ("ALIGN",         (1,1), (2,-1), "RIGHT"), # Valori Uscite
+        ("ALIGN",         (5,1), (6,-1), "RIGHT"), # Valori Entrate
         # Griglia leggera
         ("GRID",          (0,0), (-1,-1), 0.25, colors.HexColor("#d1d5db")),
         ("LINEBELOW",     (0,0), (-1,0),  1.0,  C_NAVY),
@@ -221,13 +226,13 @@ def _build_table_style(dati: list[tuple], header_rows: int = 1) -> TableStyle:
             cmds += [
                 ("BACKGROUND", (0,i), (-1,i), C_GREEN_LT),
                 ("FONTNAME",   (0,i), (-1,i), "Helvetica-Bold"),
-                ("TEXTCOLOR",  (4,i), (4,i),  C_GREEN),
+                ("TEXTCOLOR",  (5,i), (5,i),  C_GREEN), # Colonna Entrate corrente
             ]
         elif tipo == "avanzo_neg":
             cmds += [
                 ("BACKGROUND", (0,i), (-1,i), C_RED_LT),
                 ("FONTNAME",   (0,i), (-1,i), "Helvetica-Bold"),
-                ("TEXTCOLOR",  (4,i), (4,i),  C_RED),
+                ("TEXTCOLOR",  (5,i), (5,i),  C_RED), # Colonna Entrate corrente
             ]
         elif tipo == "saldo":
             cmds += [
@@ -254,28 +259,33 @@ def _build_table_style(dati: list[tuple], header_rows: int = 1) -> TableStyle:
 
 # ── Header e footer di pagina ────────────────────────────────────────────────
 
-def _make_page_header_footer(ente, anno, cf, runts, data_stampa):
+# ── Header e footer di pagina ────────────────────────────────────────────────
+
+def _make_page_header_footer(ente, anno, cf, runts, data_stampa, nota_footer=None, mostra_data=True, mostra_pagine=True, is_one_page=False):
     """Restituisce una funzione callable per il canvas di ogni pagina."""
 
     def on_page(canvas, doc):
         canvas.saveState()
-        W, H = landscape(A4)
+        W, H = doc.pagesize
 
         # ── Header ──
+        # Spostiamo l'header leggermente più in basso e aumentiamo lo spazio sopra
+        header_y = H - 25*mm
         canvas.setFillColor(C_NAVY)
-        canvas.rect(10*mm, H - 22*mm, W - 20*mm, 14*mm, fill=1, stroke=0)
+        canvas.rect(10*mm, header_y, W - 20*mm, 14*mm, fill=1, stroke=0)
 
         canvas.setFillColor(C_WHITE)
         canvas.setFont("Helvetica-Bold", 12)
-        canvas.drawString(14*mm, H - 12*mm, ente)
+        canvas.drawString(14*mm, header_y + 8.5*mm, ente)
 
         canvas.setFont("Helvetica", 8)
-        canvas.drawString(14*mm, H - 17.5*mm,
+        canvas.drawString(14*mm, header_y + 3.5*mm,
                           "Rendiconto per Cassa — Modello D (D.M. 39/2020 art. 13)")
 
         canvas.setFont("Helvetica-Bold", 22)
         anno_str = str(anno)
-        canvas.drawRightString(W - 14*mm, H - 12*mm, anno_str)
+        # Più spazio sopra il numero dell'anno
+        canvas.drawRightString(W - 14*mm, header_y + 5.5*mm, anno_str)
 
         canvas.setFont("Helvetica", 7.5)
         info_parts = []
@@ -283,22 +293,31 @@ def _make_page_header_footer(ente, anno, cf, runts, data_stampa):
             info_parts.append(f"CF: {cf}")
         if runts:
             info_parts.append(f"RUNTS: {runts}")
-        info_parts.append(f"Stampato il {data_stampa}")
-        canvas.drawRightString(W - 14*mm, H - 18*mm, "  |  ".join(info_parts))
+        if mostra_data:
+            info_parts.append(f"Stampato il {data_stampa}")
+        
+        if info_parts:
+            canvas.drawRightString(W - 14*mm, header_y + 1*mm, "  |  ".join(info_parts))
 
         # ── Footer ──
-        canvas.setFillColor(C_MUTED)
-        canvas.setFont("Helvetica", 7)
-        canvas.drawString(10*mm, 8*mm,
-            "Rendiconto redatto ai sensi dell'art. 13 co. 2 D.Lgs. 117/2017 "
-            "(Codice del Terzo Settore) e del D.M. 39/2020 Modello D.")
-        canvas.drawRightString(W - 10*mm, 8*mm,
-            f"Pagina {doc.page}")
+        # Se siamo in modalità pagina singola (per Word), il footer lo mettiamo nella Story
+        # così non lascia spazio vuoto a fine pagina.
+        if not is_one_page:
+            if nota_footer:
+                canvas.setFillColor(C_MUTED)
+                canvas.setFont("Helvetica", 7)
+                canvas.drawString(10*mm, 8*mm, nota_footer)
+            
+            if mostra_pagine:
+                canvas.setFillColor(C_MUTED)
+                canvas.setFont("Helvetica", 7)
+                canvas.drawRightString(W - 10*mm, 8*mm, f"Pagina {doc.page}")
 
-        # Linea separatrice footer
-        canvas.setStrokeColor(colors.HexColor("#d1d5db"))
-        canvas.setLineWidth(0.5)
-        canvas.line(10*mm, 12*mm, W - 10*mm, 12*mm)
+            # Linea separatrice footer (solo se c'è qualcosa da separare)
+            if nota_footer or mostra_pagine:
+                canvas.setStrokeColor(colors.HexColor("#d1d5db"))
+                canvas.setLineWidth(0.5)
+                canvas.line(10*mm, 12*mm, W - 10*mm, 12*mm)
 
         canvas.restoreState()
 
@@ -307,14 +326,19 @@ def _make_page_header_footer(ente, anno, cf, runts, data_stampa):
 
 # ── Blocco firma ─────────────────────────────────────────────────────────────
 
-def _firma_table() -> Table:
+def _firma_table(firme=None) -> Table:
+    if not firme:
+        firme = ["Il Presidente", "Il Tesoriere", "Il Revisore dei Conti"]
+    
     data = [
-        ["Il Presidente", "Il Tesoriere", "Il Revisore dei Conti"],
-        ["\n\n\n_______________________",
-         "\n\n\n_______________________",
-         "\n\n\n_______________________"],
+        firme,
+        ["\n\n\n_______________________"] * len(firme),
     ]
-    t = Table(data, colWidths=[90*mm, 90*mm, 90*mm])
+    # Calcoliamo larghezze basate sul numero di firme (max 270mm area utile landscape)
+    avail_w = 270 * mm
+    col_w = [avail_w / len(firme)] * len(firme)
+    
+    t = Table(data, colWidths=col_w)
     t.setStyle(TableStyle([
         ("ALIGN",         (0,0), (-1,-1), "CENTER"),
         ("FONTNAME",      (0,0), (-1,0),  "Helvetica-Bold"),
@@ -334,36 +358,51 @@ def genera_pdf(
     path_output: str | Path,
     cf: str = "",
     iscrizione_runts: str = "",
+    una_pagina: bool = False,
+    firme: list[str] = None,
+    nota_legale: str = None,
+    nota_footer: str = None,
+    mostra_data: bool = True,
+    mostra_pagine: bool = True,
+    data_stampa_manuale: str = None,
 ) -> None:
     """
     Genera il Rendiconto per Cassa Mod. D in PDF.
     Usa reportlab: puro Python, nessuna dipendenza di sistema.
 
-    pip install reportlab
+    Se una_pagina=True, usa un'altezza maggiore per far stare tutto
+    in un'unica pagina (utile per esportazione immagine in Word).
     """
-    W, H = landscape(A4)
-    data_stampa = date.today().strftime("%d/%m/%Y")
+    W_A4, H_A4 = landscape(A4)
+    if una_pagina:
+        W, H = W_A4, 450 * mm  # Altezza sufficiente per contenere tutte le righe
+    else:
+        W, H = W_A4, H_A4
+
+    data_stampa = data_stampa_manuale if data_stampa_manuale else date.today().strftime("%d/%m/%Y")
     ente = bil.ente or "Associazione"
 
-    on_page = _make_page_header_footer(ente, bil.anno, cf, iscrizione_runts, data_stampa)
+    on_page = _make_page_header_footer(ente, bil.anno, cf, iscrizione_runts, data_stampa, 
+                                       nota_footer, mostra_data, mostra_pagine,
+                                       is_one_page=una_pagina)
 
     # ── Template pagina ──
+    # Aumentiamo il topMargin per evitare troncamenti dell'anno
+    doc = BaseDocTemplate(
+        str(path_output),
+        pagesize=(W, H),
+        leftMargin=10*mm, rightMargin=10*mm,
+        topMargin=30*mm, bottomMargin=16*mm,
+    )
     frame = Frame(
-        10*mm, 16*mm,          # x, y (bottom-left del frame)
-        W - 20*mm,             # larghezza
-        H - 16*mm - 26*mm,     # altezza (tolti header 22mm + margini)
+        doc.leftMargin, doc.bottomMargin,
+        doc.width, doc.height,
         leftPadding=0, rightPadding=0,
         topPadding=2*mm, bottomPadding=0,
         id="main"
     )
     page_tpl = PageTemplate(id="main", frames=[frame], onPage=on_page)
-    doc = BaseDocTemplate(
-        str(path_output),
-        pagesize=landscape(A4),
-        pageTemplates=[page_tpl],
-        leftMargin=10*mm, rightMargin=10*mm,
-        topMargin=26*mm, bottomMargin=16*mm,
-    )
+    doc.addPageTemplates([page_tpl])
 
     stili = _stili()
     story = []
@@ -378,18 +417,21 @@ def genera_pdf(
     dati_righe = _costruisci_dati_tabella(bil)
 
     # Costruisce righe tabella (senza colonna tipo nel PDF)
-    table_data = [header_row] + [list(r[:6]) for r in dati_righe]
+    # Aggiungiamo una colonna vuota per il separatore centrale tra Uscite ed Entrate
+    table_data = [[header_row[0], header_row[1], header_row[2], "", header_row[4], header_row[5], header_row[6]]]
+    for r in dati_righe:
+        table_data.append([r[0], r[1], r[2], "", r[3], r[4], r[5]])
 
     # Larghezze colonne: lbl_u | val_u | prec_u | sep | lbl_e | val_e | prec_e
     avail = W - 20*mm
     col_w = [
-        avail * 0.34,   # label uscite
-        avail * 0.09,   # val uscite
-        avail * 0.08,   # prec uscite
-        avail * 0.01,   # separatore
-        avail * 0.34,   # label entrate
-        avail * 0.09,   # val entrate
-        avail * 0.05,   # prec entrate (un po' meno per bilanciare)
+        avail * 0.40,   # label uscite (più larga)
+        avail * 0.065,  # val uscite (stretta)
+        avail * 0.065,  # prec uscite (stretta)
+        avail * 0.005,  # separatore
+        avail * 0.335,  # label entrate (bilanciata)
+        avail * 0.065,  # val entrate (stretta)
+        avail * 0.065,  # prec entrate (stretta)
     ]
 
     ts = _build_table_style(
@@ -401,19 +443,25 @@ def genera_pdf(
     story.append(t)
 
     # ── Firma ──
-    story.append(Spacer(1, 8*mm))
-    story.append(_firma_table())
+    if firme:
+        story.append(Spacer(1, 8*mm))
+        story.append(_firma_table(firme))
 
     # ── Nota legale ──
-    story.append(Spacer(1, 4*mm))
-    story.append(HRFlowable(width="100%", thickness=0.5,
-                             color=colors.HexColor("#d1d5db")))
-    story.append(Spacer(1, 1*mm))
-    story.append(Paragraph(
-        "I dati originali sono conservati in formato CSV aperto. "
-        "Documento generato con CassaETS (reportlab).",
-        stili["nota"]
-    ))
+    if nota_legale:
+        story.append(Spacer(1, 4*mm))
+        story.append(HRFlowable(width="100%", thickness=0.5,
+                                 color=colors.HexColor("#d1d5db")))
+        story.append(Spacer(1, 1*mm))
+        story.append(Paragraph(nota_legale, stili["nota"]))
+
+    # ── Footer (solo se una_pagina=True) ──
+    if una_pagina:
+        if nota_footer:
+            story.append(Spacer(1, 6*mm))
+            story.append(Paragraph(nota_footer, stili["footer"]))
+        if mostra_pagine:
+            story.append(Paragraph("Pagina 1", stili["footer"]))
 
     doc.build(story)
     print(f"PDF generato: {path_output}")

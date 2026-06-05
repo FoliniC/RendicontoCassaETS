@@ -216,13 +216,13 @@ def calcola_bilancio(
             totali_precedenti[cod] = somma_per_codice(movimenti_prec, cod) if movimenti_prec else 0.0
 
     # Costruisce le righe del bilancio
-    # Raggruppiamo le righe per numero di riga (U e E condividono la stessa riga)
-    righe_map: dict[int, RigaBilancio] = {}
+    # Usiamo una lista piatta per non perdere dati tra U e E che condividono la riga
+    righe_bilancio: list[RigaBilancio] = []
 
     totali_sezione_u: dict[str, float] = {}  # codice Z.U.x → valore
     totali_sezione_e: dict[str, float] = {}
 
-    for voce in PIANO_DEI_CONTI:
+    for i, voce in enumerate(PIANO_DEI_CONTI):
         cod  = voce["codice"]
         riga = voce["riga"]
         tipo = voce["tipo"]
@@ -230,81 +230,36 @@ def calcola_bilancio(
         if tipo == "voce":
             val_c = totali_correnti.get(cod, 0.0)
             val_p = totali_precedenti.get(cod, 0.0)
-            if riga not in righe_map:
-                righe_map[riga] = RigaBilancio(codice=cod, label=voce["label"], riga=riga, tipo=tipo)
-            r = righe_map[riga]
-            # Uscite → colonna sx (importo_corrente), Entrate → colonna dx
-            if cod.startswith("U."):
-                r.importo_corrente   += val_c
-                r.importo_precedente += val_p
-            else:
-                r.importo_corrente   += val_c
-                r.importo_precedente += val_p
+            righe_bilancio.append(RigaBilancio(
+                codice=cod, label=voce["label"], riga=riga, tipo=tipo,
+                importo_corrente=val_c, importo_precedente=val_p
+            ))
 
         elif tipo == "totale_sezione":
             n = voce.get("n", 0)
-            # Somma le n voci precedenti della stessa sezione
+            # Somma le n voci precedenti della stessa sezione basandosi sulla posizione in lista
+            prefix = "U." if cod.startswith("Z.U.") else "E."
+            voci_prec = [v for v in PIANO_DEI_CONTI[:i] if v["tipo"] == "voce" and v["codice"].startswith(prefix)]
+            
+            tot_c = sum(totali_correnti.get(v["codice"], 0.0) for v in voci_prec[-n:])
+            tot_p = sum(totali_precedenti.get(v["codice"], 0.0) for v in voci_prec[-n:])
+            
             if cod.startswith("Z.U."):
-                # Trova le voci U con riga in [riga-n .. riga-1]
-                tot_c = sum(
-                    totali_correnti.get(v["codice"], 0.0)
-                    for v in PIANO_DEI_CONTI
-                    if v["tipo"] == "voce" and v["codice"].startswith("U.")
-                    and riga - n <= v["riga"] <= riga - 1
-                )
-                tot_p = sum(
-                    totali_precedenti.get(v["codice"], 0.0)
-                    for v in PIANO_DEI_CONTI
-                    if v["tipo"] == "voce" and v["codice"].startswith("U.")
-                    and riga - n <= v["riga"] <= riga - 1
-                )
                 totali_sezione_u[cod] = tot_c
             else:
-                tot_c = sum(
-                    totali_correnti.get(v["codice"], 0.0)
-                    for v in PIANO_DEI_CONTI
-                    if v["tipo"] == "voce" and v["codice"].startswith("E.")
-                    and riga - n <= v["riga"] <= riga - 1
-                )
-                tot_p = sum(
-                    totali_precedenti.get(v["codice"], 0.0)
-                    for v in PIANO_DEI_CONTI
-                    if v["tipo"] == "voce" and v["codice"].startswith("E.")
-                    and riga - n <= v["riga"] <= riga - 1
-                )
                 totali_sezione_e[cod] = tot_c
-
-            if riga not in righe_map:
-                righe_map[riga] = RigaBilancio(codice=cod, label=voce["label"], riga=riga, tipo=tipo, n=n)
-            r = righe_map[riga]
-            if cod.startswith("Z.U."):
-                r.importo_corrente   = tot_c
-                r.importo_precedente = tot_p
-            else:
-                # Per Z.E.x il totale è nella colonna entrate dello stesso riga
-                # Ma la riga è condivisa con Z.U.x → aggiorniamo importo_corrente solo se non già scritto
-                r.importo_corrente   = tot_c
-                r.importo_precedente = tot_p
+                
+            righe_bilancio.append(RigaBilancio(
+                codice=cod, label=voce["label"], riga=riga, tipo=tipo, n=n,
+                importo_corrente=tot_c, importo_precedente=tot_p
+            ))
 
     # Totale uscite/entrate della gestione (riga 46)
     tot_uscite_c = sum(totali_sezione_u.values())
-    tot_uscite_p = sum(
-        sum(
-            totali_precedenti.get(v["codice"], 0.0)
-            for v in PIANO_DEI_CONTI
-            if v["tipo"] == "voce" and v["codice"].startswith("U.")
-        )
-        for _ in [1]  # trick per evitare nested sum
-    )
-    tot_uscite_p = sum(
-        totali_precedenti.get(v["codice"], 0.0)
-        for v in PIANO_DEI_CONTI if v["tipo"] == "voce" and v["codice"].startswith("U.")
-    )
+    tot_uscite_p = sum(totali_precedenti.get(v["codice"], 0.0) for v in PIANO_DEI_CONTI if v["tipo"] == "voce" and v["codice"].startswith("U."))
+    
     tot_entrate_c = sum(totali_sezione_e.values())
-    tot_entrate_p = sum(
-        totali_precedenti.get(v["codice"], 0.0)
-        for v in PIANO_DEI_CONTI if v["tipo"] == "voce" and v["codice"].startswith("E.")
-    )
+    tot_entrate_p = sum(totali_precedenti.get(v["codice"], 0.0) for v in PIANO_DEI_CONTI if v["tipo"] == "voce" and v["codice"].startswith("E."))
 
     # Saldi finali
     saldo_cassa = saldo_finale(movimenti, "cassa")
@@ -323,8 +278,8 @@ def calcola_bilancio(
     bil.avanzo_finale     = round(avanzo_finale, 2)
     bil.totale_generale   = round(saldo_cassa + saldo_cc, 2)
 
-    # Costruisci lista righe ordinata
-    bil.righe = [r for _, r in sorted(righe_map.items())]
+    # Costruisci lista righe
+    bil.righe = righe_bilancio
 
     return bil
 
